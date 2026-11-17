@@ -1,0 +1,90 @@
+name: Deploy NextChat to Cloudflare Workers
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [deploy-nextchat-workers]
+    paths:
+      - nextchat-deploy/**
+      - .github/workflows/deploy-nextchat-workers.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nextchat-workers-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out deployment configuration
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          path: deployment
+
+      - name: Check out pinned NextChat source
+        uses: actions/checkout@v4
+        with:
+          repository: ChatGPTNextWeb/NextChat
+          ref: 1d3dc331512929a4b1d3e82354e72acce33b5c7a
+          persist-credentials: false
+          path: nextchat
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Apply Workers compatibility changes
+        working-directory: nextchat
+        run: |
+          git apply --check ../deployment/nextchat-deploy/nextchat-workers.patch
+          git apply ../deployment/nextchat-deploy/nextchat-workers.patch
+          rm yarn.lock
+          cp ../deployment/nextchat-deploy/package-lock.json package-lock.json
+
+      - name: Install locked dependencies
+        working-directory: nextchat
+        run: npm ci --legacy-peer-deps --ignore-scripts --no-audit --no-fund
+
+      - name: Build NextChat for Workers
+        working-directory: nextchat
+        env:
+          NEXT_TELEMETRY_DISABLED: '1'
+        run: npm run build:workers
+
+      - name: Test in the local Workers runtime
+        working-directory: nextchat
+        run: |
+          node_modules/.bin/wrangler dev --local --port 38479 --inspector-port 41849 > /tmp/nextchat-preview.log 2>&1 &
+          preview_pid=$!
+          trap 'kill "$preview_pid" 2>/dev/null || true' EXIT
+          python ../deployment/nextchat-deploy/smoke.py
+
+      - name: Deploy and bind aiweb.cheapapi.com.cn
+        working-directory: nextchat
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo 'Add CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID in repository Actions secrets, then re-run this workflow.'
+            exit 1
+          fi
+          npm run deploy:workers
+
+      - name: Check the public site
+        run: |
+          for attempt in 1 2 3 4 5 6; do
+            if curl --fail --silent --show-error --max-time 20 https://aiweb.cheapapi.com.cn/api/config > /tmp/nextchat-config.json; then
+              node -e 'const c=JSON.parse(require("fs").readFileSync("/tmp/nextchat-config.json","utf8")); if(typeof c.needCode!=="boolean") process.exit(1);'
+              exit 0
+            fi
+            sleep 10
+          done
+          echo 'Worker deployed, but custom-domain HTTPS/DNS is not ready yet. Check Cloudflare Domains & Routes.'
+          exit 1

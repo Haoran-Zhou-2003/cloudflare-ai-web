@@ -1,0 +1,500 @@
+diff --git a/.babelrc b/.babelrc
+deleted file mode 100644
+index 53e4d9b..0000000
+--- a/.babelrc
++++ /dev/null
+@@ -1,14 +0,0 @@
+-{
+-  "presets": [
+-    [
+-      "next/babel",
+-      {
+-        "preset-env": {
+-          "targets": {
+-            "browsers": ["> 0.25%, not dead"]
+-          }
+-        }
+-      }
+-    ]
+-  ]
+-}
+diff --git a/.gitignore b/.gitignore
+index b1c2bfe..bce07da 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -49,3 +49,7 @@ masks.json
+ 
+ # mcp config
+ app/mcp/mcp_config.json
++
++.open-next/
++.wrangler/
++.dev.vars*
+diff --git a/app/api/[provider]/[...path]/route.ts b/app/api/[provider]/[...path]/route.ts
+index e8af34f..5e2ae5d 100644
+--- a/app/api/[provider]/[...path]/route.ts
++++ b/app/api/[provider]/[...path]/route.ts
+@@ -19,8 +19,9 @@ import { handle as ai302Handler } from "../../302ai";
+ 
+ async function handle(
+   req: NextRequest,
+-  { params }: { params: { provider: string; path: string[] } },
++  context: { params: Promise<{ provider: string; path: string[] }> },
+ ) {
++  const params = await context.params;
+   const apiPath = `/api/${params.provider}`;
+   console.log(`[${params.provider} Route] params `, params);
+   switch (apiPath) {
+@@ -63,7 +64,7 @@ async function handle(
+ export const GET = handle;
+ export const POST = handle;
+ 
+-export const runtime = "edge";
++
+ export const preferredRegion = [
+   "arn1",
+   "bom1",
+diff --git a/app/api/artifacts/route.ts b/app/api/artifacts/route.ts
+index 4707e79..3bc1895 100644
+--- a/app/api/artifacts/route.ts
++++ b/app/api/artifacts/route.ts
+@@ -2,7 +2,7 @@ import md5 from "spark-md5";
+ import { NextRequest, NextResponse } from "next/server";
+ import { getServerSideConfig } from "@/app/config/server";
+ 
+-async function handle(req: NextRequest, res: NextResponse) {
++async function handle(req: NextRequest) {
+   const serverConfig = getServerSideConfig();
+   const storeUrl = () =>
+     `https://api.cloudflare.com/client/v4/accounts/${serverConfig.cloudflareAccountId}/storage/kv/namespaces/${serverConfig.cloudflareKVNamespaceId}`;
+@@ -69,5 +69,3 @@ async function handle(req: NextRequest, res: NextResponse) {
+ 
+ export const POST = handle;
+ export const GET = handle;
+-
+-export const runtime = "edge";
+diff --git a/app/api/auth.ts b/app/api/auth.ts
+index 8c78c70..ff27f3a 100644
+--- a/app/api/auth.ts
++++ b/app/api/auth.ts
+@@ -4,7 +4,7 @@ import md5 from "spark-md5";
+ import { ACCESS_CODE_PREFIX, ModelProvider } from "../constant";
+ 
+ function getIP(req: NextRequest) {
+-  let ip = req.ip ?? req.headers.get("x-real-ip");
++  let ip = req.headers.get("cf-connecting-ip") ?? req.headers.get("x-real-ip");
+   const forwardedFor = req.headers.get("x-forwarded-for");
+ 
+   if (!ip && forwardedFor) {
+@@ -33,9 +33,6 @@ export function auth(req: NextRequest, modelProvider: ModelProvider) {
+   const hashedCode = md5.hash(accessCode ?? "").trim();
+ 
+   const serverConfig = getServerSideConfig();
+-  console.log("[Auth] allowed hashed codes: ", [...serverConfig.codes]);
+-  console.log("[Auth] got access code:", accessCode);
+-  console.log("[Auth] hashed access code:", hashedCode);
+   console.log("[User IP] ", getIP(req));
+   console.log("[Time] ", new Date().toLocaleString());
+ 
+diff --git a/app/api/config/route.ts b/app/api/config/route.ts
+index 855a5db..e406d9f 100644
+--- a/app/api/config/route.ts
++++ b/app/api/config/route.ts
+@@ -27,5 +27,3 @@ async function handle() {
+ 
+ export const GET = handle;
+ export const POST = handle;
+-
+-export const runtime = "edge";
+diff --git a/app/api/google.ts b/app/api/google.ts
+index 707892c..6375727 100644
+--- a/app/api/google.ts
++++ b/app/api/google.ts
+@@ -52,7 +52,7 @@ export async function handle(
+ export const GET = handle;
+ export const POST = handle;
+ 
+-export const runtime = "edge";
++
+ export const preferredRegion = [
+   "bom1",
+   "cle1",
+diff --git a/app/api/proxy.ts b/app/api/proxy.ts
+index b3e5e7b..44feb23 100644
+--- a/app/api/proxy.ts
++++ b/app/api/proxy.ts
+@@ -1,5 +1,6 @@
+ import { NextRequest, NextResponse } from "next/server";
+-import { getServerSideConfig } from "@/app/config/server";
++import { auth } from "@/app/api/auth";
++import { ModelProvider } from "@/app/constant";
+ 
+ export async function handle(
+   req: NextRequest,
+@@ -10,16 +11,26 @@ export async function handle(
+   if (req.method === "OPTIONS") {
+     return NextResponse.json({ body: "OK" }, { status: 200 });
+   }
+-  const serverConfig = getServerSideConfig();
++  let baseUrl: URL;
++  try {
++    baseUrl = new URL(req.headers.get("x-base-url") ?? "");
++    if (baseUrl.protocol !== "https:") throw new Error("HTTPS required");
++  } catch {
++    return NextResponse.json({ error: "Invalid proxy base URL" }, { status: 400 });
++  }
++
++  // Only the real OpenAI origin may receive the server's OpenAI credential.
++  if (baseUrl.hostname === "api.openai.com") {
++    const result = auth(req, ModelProvider.GPT);
++    if (result.error) return NextResponse.json(result, { status: 401 });
++  }
+ 
+   // remove path params from searchParams
+   req.nextUrl.searchParams.delete("path");
+   req.nextUrl.searchParams.delete("provider");
+ 
+   const subpath = params.path.join("/");
+-  const fetchUrl = `${req.headers.get(
+-    "x-base-url",
+-  )}/${subpath}?${req.nextUrl.searchParams.toString()}`;
++  const fetchUrl = `${baseUrl.href.replace(/\/$/, "")}/${subpath}?${req.nextUrl.searchParams.toString()}`;
+   const skipHeaders = ["connection", "host", "origin", "referer", "cookie"];
+   const headers = new Headers(
+     Array.from(req.headers.entries()).filter((item) => {
+@@ -33,17 +44,6 @@ export async function handle(
+       return true;
+     }),
+   );
+-  // if dalle3 use openai api key
+-    const baseUrl = req.headers.get("x-base-url");
+-    if (baseUrl?.includes("api.openai.com")) {
+-      if (!serverConfig.apiKey) {
+-        return NextResponse.json(
+-          { error: "OpenAI API key not configured" },
+-          { status: 500 },
+-        );
+-      }
+-      headers.set("Authorization", `Bearer ${serverConfig.apiKey}`);
+-    }
+ 
+   const controller = new AbortController();
+   const fetchOptions: RequestInit = {
+diff --git a/app/api/tencent/route.ts b/app/api/tencent/route.ts
+index fc4f8c7..2eec745 100644
+--- a/app/api/tencent/route.ts
++++ b/app/api/tencent/route.ts
+@@ -9,9 +9,7 @@ const serverConfig = getServerSideConfig();
+ 
+ async function handle(
+   req: NextRequest,
+-  { params }: { params: { path: string[] } },
+ ) {
+-  console.log("[Tencent Route] params ", params);
+ 
+   if (req.method === "OPTIONS") {
+     return NextResponse.json({ body: "OK" }, { status: 200 });
+@@ -36,7 +34,7 @@ async function handle(
+ export const GET = handle;
+ export const POST = handle;
+ 
+-export const runtime = "edge";
++
+ export const preferredRegion = [
+   "arn1",
+   "bom1",
+diff --git a/app/api/upstash/[action]/[...key]/route.ts b/app/api/upstash/[action]/[...key]/route.ts
+index fcfef47..2baba57 100644
+--- a/app/api/upstash/[action]/[...key]/route.ts
++++ b/app/api/upstash/[action]/[...key]/route.ts
+@@ -2,8 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
+ 
+ async function handle(
+   req: NextRequest,
+-  { params }: { params: { action: string; key: string[] } },
++  context: { params: Promise<{ action: string; key: string[] }> },
+ ) {
++  const params = await context.params;
+   const requestUrl = new URL(req.url);
+   const endpoint = requestUrl.searchParams.get("endpoint");
+ 
+@@ -55,7 +56,7 @@ async function handle(
+     duplex: "half",
+   };
+ 
+-  console.log("[Upstash Proxy]", targetUrl, fetchOptions);
++  console.log("[Upstash Proxy]", new URL(targetUrl).hostname);
+   const fetchResult = await fetch(targetUrl, fetchOptions);
+ 
+   console.log("[Any Proxy]", targetUrl, {
+@@ -69,5 +70,3 @@ async function handle(
+ export const POST = handle;
+ export const GET = handle;
+ export const OPTIONS = handle;
+-
+-export const runtime = "edge";
+diff --git a/app/api/webdav/[...path]/route.ts b/app/api/webdav/[...path]/route.ts
+index bb7743b..2fd81ae 100644
+--- a/app/api/webdav/[...path]/route.ts
++++ b/app/api/webdav/[...path]/route.ts
+@@ -19,8 +19,9 @@ const normalizeUrl = (url: string) => {
+ 
+ async function handle(
+   req: NextRequest,
+-  { params }: { params: { path: string[] } },
++  context: { params: Promise<{ path: string[] }> },
+ ) {
++  const params = await context.params;
+   if (req.method === "OPTIONS") {
+     return NextResponse.json({ body: "OK" }, { status: 200 });
+   }
+@@ -163,5 +164,3 @@ async function handle(
+ export const PUT = handle;
+ export const GET = handle;
+ export const OPTIONS = handle;
+-
+-export const runtime = "edge";
+diff --git a/app/components/chat.tsx b/app/components/chat.tsx
+index a7f1af6..c0b5b67 100644
+--- a/app/components/chat.tsx
++++ b/app/components/chat.tsx
+@@ -987,7 +987,7 @@ export function ShortcutKeyModal(props: { onClose: () => void }) {
+   );
+ }
+ 
+-function _Chat() {
++function ChatContent() {
+   type RenderMessage = ChatMessage & { preview?: boolean };
+ 
+   const chatStore = useChatStore();
+@@ -2168,5 +2168,5 @@ function _Chat() {
+ export function Chat() {
+   const chatStore = useChatStore();
+   const session = chatStore.currentSession();
+-  return <_Chat key={session.id}></_Chat>;
++  return <ChatContent key={session.id}></ChatContent>;
+ }
+diff --git a/app/components/client-home.tsx b/app/components/client-home.tsx
+new file mode 100644
+index 0000000..d872720
+--- /dev/null
++++ b/app/components/client-home.tsx
+@@ -0,0 +1,10 @@
++"use client";
++
++import dynamic from "next/dynamic";
++
++// NextChat uses browser storage and hash routing; keep its UI out of the
++// server bundle so it also fits within the free Workers script limit.
++export const Home = dynamic(() => import("./home").then((m) => m.Home), {
++  ssr: false,
++  loading: () => <div style={{ padding: 24 }}>正在加载 NextChat…</div>,
++});
+diff --git a/app/components/markdown.tsx b/app/components/markdown.tsx
+index 97a4f4e..99c0937 100644
+--- a/app/components/markdown.tsx
++++ b/app/components/markdown.tsx
+@@ -267,7 +267,7 @@ function tryWrapHtmlCode(text: string) {
+     );
+ }
+ 
+-function _MarkDownContent(props: { content: string }) {
++function MemoizedMarkdownContent(props: { content: string }) {
+   const escapedContent = useMemo(() => {
+     return tryWrapHtmlCode(escapeBrackets(props.content));
+   }, [props.content]);
+@@ -316,7 +316,7 @@ function _MarkDownContent(props: { content: string }) {
+   );
+ }
+ 
+-export const MarkdownContent = React.memo(_MarkDownContent);
++export const MarkdownContent = React.memo(MemoizedMarkdownContent);
+ 
+ export function Markdown(
+   props: {
+diff --git a/app/config/server.ts b/app/config/server.ts
+index 14175ea..bb01f35 100644
+--- a/app/config/server.ts
++++ b/app/config/server.ts
+@@ -118,13 +118,7 @@ function getApiKey(keys?: string) {
+   const apiKeys = apiKeyEnvVar.split(",").map((v) => v.trim());
+   const randomIndex = Math.floor(Math.random() * apiKeys.length);
+   const apiKey = apiKeys[randomIndex];
+-  if (apiKey) {
+-    console.log(
+-      `[Server Config] using ${randomIndex + 1} of ${
+-        apiKeys.length
+-      } api key - ${apiKey}`,
+-    );
+-  }
++
+ 
+   return apiKey;
+ }
+diff --git a/app/page.tsx b/app/page.tsx
+index c748d42..ceea797 100644
+--- a/app/page.tsx
++++ b/app/page.tsx
+@@ -1,5 +1,5 @@
+ import { Analytics } from "@vercel/analytics/react";
+-import { Home } from "./components/home";
++import { Home } from "./components/client-home";
+ import { getServerSideConfig } from "./config/server";
+ 
+ const serverConfig = getServerSideConfig();
+diff --git a/next.config.mjs b/next.config.mjs
+index 0e1105d..7574835 100644
+--- a/next.config.mjs
++++ b/next.config.mjs
+@@ -28,11 +28,9 @@ const nextConfig = {
+   },
+   output: mode,
+   images: {
+-    unoptimized: mode === "export",
+-  },
+-  experimental: {
+-    forceSwcTransforms: true,
++    unoptimized: true,
+   },
++  experimental: { cpus: 2 },
+ };
+ 
+ const CorsHeaders = [
+diff --git a/open-next.config.ts b/open-next.config.ts
+new file mode 100644
+index 0000000..1a57e31
+--- /dev/null
++++ b/open-next.config.ts
+@@ -0,0 +1,3 @@
++import { defineCloudflareConfig } from "@opennextjs/cloudflare";
++
++export default defineCloudflareConfig({});
+diff --git a/package.json b/package.json
+index ceb92d7..7718997 100644
+--- a/package.json
++++ b/package.json
+@@ -3,10 +3,10 @@
+   "private": false,
+   "license": "mit",
+   "scripts": {
+-    "mask": "npx tsx app/masks/build.ts",
++    "mask": "node --import tsx app/masks/build.ts",
+     "mask:watch": "npx watch \"yarn mask\" app/masks",
+     "dev": "concurrently -r \"yarn run mask:watch\" \"next dev\"",
+-    "build": "yarn mask && cross-env BUILD_MODE=standalone next build",
++    "build": "npm run mask && cross-env BUILD_MODE=standalone next build",
+     "start": "next start",
+     "lint": "next lint",
+     "export": "yarn mask && cross-env BUILD_MODE=export BUILD_APP=1 next build",
+@@ -15,16 +15,19 @@
+     "app:build": "yarn mask && yarn tauri build",
+     "app:clear": "yarn tauri dev",
+     "prompts": "node ./scripts/fetch-prompts.mjs",
+-    "prepare": "husky install",
+     "proxy-dev": "sh ./scripts/init-proxy.sh && proxychains -f ./scripts/proxychains.conf yarn dev",
+     "test": "node --no-warnings --experimental-vm-modules $(yarn bin jest) --watch",
+-    "test:ci": "node --no-warnings --experimental-vm-modules $(yarn bin jest) --ci"
++    "test:ci": "node --no-warnings --experimental-vm-modules $(yarn bin jest) --ci",
++    "build:workers": "opennextjs-cloudflare build",
++    "deploy:workers": "opennextjs-cloudflare deploy",
++    "preview:workers": "opennextjs-cloudflare preview"
+   },
+   "dependencies": {
+     "@fortaine/fetch-event-source": "^3.0.6",
+     "@hello-pangea/dnd": "^16.5.0",
+     "@modelcontextprotocol/sdk": "^1.0.4",
+-    "@next/third-parties": "^14.1.0",
++    "@next/third-parties": "15.5.29",
++    "@opennextjs/cloudflare": "1.20.17",
+     "@svgr/webpack": "^6.5.1",
+     "@vercel/analytics": "^0.1.11",
+     "@vercel/speed-insights": "^1.0.2",
+@@ -39,11 +42,11 @@
+     "markdown-to-txt": "^2.0.1",
+     "mermaid": "^10.6.1",
+     "nanoid": "^5.0.3",
+-    "next": "^14.1.1",
++    "next": "15.5.29",
+     "node-fetch": "^3.3.1",
+     "openapi-client-axios": "^7.5.5",
+-    "react": "^18.2.0",
+-    "react-dom": "^18.2.0",
++    "react": "18.3.1",
++    "react-dom": "18.3.1",
+     "react-markdown": "^8.0.7",
+     "react-router-dom": "^6.15.0",
+     "rehype-highlight": "^6.0.0",
+@@ -75,7 +78,7 @@
+     "concurrently": "^8.2.2",
+     "cross-env": "^7.0.3",
+     "eslint": "^8.49.0",
+-    "eslint-config-next": "13.4.19",
++    "eslint-config-next": "15.5.29",
+     "eslint-config-prettier": "^8.8.0",
+     "eslint-plugin-prettier": "^5.1.3",
+     "eslint-plugin-unused-imports": "^3.2.0",
+@@ -88,10 +91,14 @@
+     "tsx": "^4.16.0",
+     "typescript": "5.2.2",
+     "watch": "^1.0.2",
+-    "webpack": "^5.88.1"
++    "webpack": "^5.88.1",
++    "wrangler": "4.163.0"
+   },
+   "resolutions": {
+     "lint-staged/yaml": "^2.2.2"
+   },
+-  "packageManager": "yarn@1.22.19"
++  "packageManager": "npm@11.9.0",
++  "overrides": {
++    "cytoscape": "3.24.0"
++  }
+ }
+diff --git a/public/_headers b/public/_headers
+new file mode 100644
+index 0000000..3b460e6
+--- /dev/null
++++ b/public/_headers
+@@ -0,0 +1,2 @@
++/_next/static/*
++  Cache-Control: public,max-age=31536000,immutable
+diff --git a/wrangler.jsonc b/wrangler.jsonc
+new file mode 100644
+index 0000000..7a0e9f8
+--- /dev/null
++++ b/wrangler.jsonc
+@@ -0,0 +1,34 @@
++{
++  "$schema": "node_modules/wrangler/config-schema.json",
++  "name": "nextchat-aiweb",
++  "main": ".open-next/worker.js",
++  "compatibility_date": "2026-11-17",
++  "compatibility_flags": [
++    "nodejs_compat",
++    "global_fetch_strictly_public"
++  ],
++  "assets": {
++    "directory": ".open-next/assets",
++    "binding": "ASSETS"
++  },
++  "services": [
++    {
++      "binding": "WORKER_SELF_REFERENCE",
++      "service": "nextchat-aiweb"
++    }
++  ],
++  "routes": [
++    {
++      "pattern": "aiweb.cheapapi.com.cn",
++      "custom_domain": true
++    }
++  ],
++  "workers_dev": true,
++  "vars": {
++    "NEXTJS_ENV": "production",
++    "DISABLE_FAST_LINK": "true"
++  },
++  "observability": {
++    "enabled": false
++  }
++}
