@@ -14,9 +14,9 @@
 
 ## 首次使用
 
-默认不配置公共模型密钥。打开网站后，在 NextChat 设置中填写自己的模型服务地址、API Key 和模型。
+默认使用 Google 原生 Gemini API 调用 Gemma，默认模型为 `gemma-4-31b-it`，同时提供 `gemma-4-26b-a4b-it`。Google 接口地址为 `https://generativelanguage.googleapis.com/`。默认不配置公共模型密钥；打开网站后在设置中启用自定义接口、选择 Google，并填写自己的 Google AI Studio API Key。网页端接口地址保持 `/api/google`，请求经过本站 Worker 转发。
 
-如需共享服务器 API Key，先在 Worker 的 Settings → Variables and Secrets 中设置 `CODE` 访问码，再添加对应的模型密钥（例如 `OPENAI_API_KEY`）以及必要的 `BASE_URL`。密钥使用 Secret 类型。`CODE` 和模型密钥都只在 Cloudflare 配置，不能放入构建变量或提交到仓库。
+如希望 Google API Key 只保存在 Worker 端，先在 Worker 的 Settings → Variables and Secrets 中设置 `CODE` 访问码，再添加 `GOOGLE_API_KEY`。两者使用 Secret 类型，不放入构建变量或提交到仓库。Google API Key 用于模型调用，`CLOUDFLARE_API_TOKEN` 用于发布网站；这两种凭据不能互相替代。
 
 不会自动启用 R2、KV、Workers AI 或付费套餐。Artifacts 的云端分享功能需要另行配置 KV；未配置时不提供该功能。对话记录默认保存在当前浏览器。
 
@@ -43,3 +43,5 @@
 - https://opennext.js.org/cloudflare/get-started
 - https://developers.cloudflare.com/workers/configuration/routing/custom-domains/
 - https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/
+
+Google Gemma 官方接口说明：https://ai.google.dev/gemma/docs/core/gemma_on_gemini_api

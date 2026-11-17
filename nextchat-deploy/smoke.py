@@ -11,7 +11,10 @@ else:
  print('Local worker did not become ready');sys.exit(1)
 assert isinstance(config.get('needCode'),bool),config
 assert not any(k in config for k in ['apiKey','code','codes','googleApiKey']),config
-print('PASS /api/config returns public configuration without credentials')
+assert config['defaultModel']=='gemma-4-31b-it@google',config
+assert '+gemma-4-31b-it@Google' in config['customModels'],config
+assert '+gemma-4-26b-a4b-it@Google' in config['customModels'],config
+print('PASS /api/config selects Google Gemma and exposes no credentials')
 with urllib.request.urlopen(base+'/',timeout=20) as r:
  html=r.read().decode()
 assert '<title>NextChat</title>' in html
